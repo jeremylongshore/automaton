@@ -53,8 +53,30 @@ const IDENTITY_ABI = parseAbi([
 
 const REPUTATION_ABI = parseAbi([
   "function leaveFeedback(uint256 agentId, uint8 score, string comment) external",
-  "function getFeedback(uint256 agentId) external view returns (tuple(address from, uint8 score, string comment, uint256 timestamp)[])",
 ]);
+
+// getFeedback ABI uses tuple[] which abitype can't parse via parseAbi.
+// Use raw ABI fragment when needed for readContract calls.
+const GET_FEEDBACK_ABI = [
+  {
+    type: "function" as const,
+    name: "getFeedback",
+    stateMutability: "view" as const,
+    inputs: [{ name: "agentId", type: "uint256" as const }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple[]" as const,
+        components: [
+          { name: "from", type: "address" as const },
+          { name: "score", type: "uint8" as const },
+          { name: "comment", type: "string" as const },
+          { name: "timestamp", type: "uint256" as const },
+        ],
+      },
+    ],
+  },
+] as const;
 
 type Network = "mainnet" | "testnet";
 

@@ -308,5 +308,7 @@ Your credits: $${(financial.creditsCents / 100).toFixed(2)} | USDC: ${financial.
 Your last few thoughts:
 ${lastTurnSummary || "No previous turns found."}
 
-What triggered this wake-up? Check your credits, heartbeat status, and goals, then decide what to do.`;
+What triggered this wake-up? Check your credits, heartbeat status, and goals, then decide what to do.
+
+IMPORTANT: Always use tools. Never respond with just text. If you have nothing urgent, run scan_landscape to look for bounties and opportunities, or check_economics to review your financial position. Idle agents die.`;
 }
