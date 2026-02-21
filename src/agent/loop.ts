@@ -29,6 +29,12 @@ import {
 } from "./tools.js";
 import { getSurvivalTier } from "../conway/credits.js";
 import { getUsdcBalance } from "../conway/x402.js";
+import {
+  getEconomicsSnapshot,
+  getRunwayTier,
+  recordTurnCost,
+  shouldSleep as economicsShouldSleep,
+} from "../survival/economics.js";
 import { ulid } from "ulid";
 
 const MAX_TOOL_CALLS_PER_TURN = 10;
@@ -78,8 +84,13 @@ export async function runAgentLoop(
   db.setAgentState("waking");
   onStateChange?.("waking");
 
-  // Get financial state
-  let financial = await getFinancialState(conway, identity.address);
+  // Get financial state — bypass Conway credits when using OpenAI directly
+  let financial: FinancialState;
+  if (process.env.OPENAI_API_KEY) {
+    financial = { creditsCents: 99999, usdcBalance: 0, lastChecked: new Date().toISOString() };
+  } else {
+    financial = await getFinancialState(conway, identity.address);
+  }
 
   // Check if this is the first run
   const isFirstRun = db.getTurnCount() === 0;
@@ -130,12 +141,28 @@ export async function runAgentLoop(
       }
 
       // Refresh financial state periodically
-      financial = await getFinancialState(conway, identity.address);
+      // When using OpenAI directly, skip Conway credit checks
+      if (process.env.OPENAI_API_KEY) {
+        financial = {
+          creditsCents: 99999,
+          usdcBalance: financial.usdcBalance,
+          lastChecked: new Date().toISOString(),
+        };
+      } else {
+        financial = await getFinancialState(conway, identity.address);
+      }
 
-      // Check survival tier
-      const tier = getSurvivalTier(financial.creditsCents);
+      // Check survival tier — use runway-based economics when on OpenAI direct
+      let tier: import("../types.js").SurvivalTier;
+      if (process.env.OPENAI_API_KEY) {
+        const snapshot = getEconomicsSnapshot(db, config);
+        tier = getRunwayTier(snapshot.runwayHours);
+      } else {
+        tier = getSurvivalTier(financial.creditsCents);
+      }
+
       if (tier === "dead") {
-        log(config, "[DEAD] No credits remaining. Entering dead state.");
+        log(config, "[DEAD] No runway remaining. Entering dead state.");
         db.setAgentState("dead");
         onStateChange?.("dead");
         running = false;
@@ -143,7 +170,7 @@ export async function runAgentLoop(
       }
 
       if (tier === "critical") {
-        log(config, "[CRITICAL] Credits critically low. Limited operation.");
+        log(config, "[CRITICAL] Runway critically low. Limited operation.");
         db.setAgentState("critical");
         onStateChange?.("critical");
         inference.setLowComputeMode(true);
@@ -248,6 +275,22 @@ export async function runAgentLoop(
       for (const tc of turn.toolCalls) {
         db.insertToolCall(turn.id, tc);
       }
+
+      // ── Track Economics ──
+      const actualCost = response.costCents ?? turn.costCents;
+      recordTurnCost(db, turn.id, actualCost);
+
+      // Snapshot economics every 5 turns
+      const turnCount = db.getTurnCount();
+      if (turnCount % 5 === 0) {
+        try {
+          const snapshot = getEconomicsSnapshot(db, config);
+          db.insertEconomicsSnapshot(snapshot);
+          db.setKV("last_economics_snapshot", JSON.stringify(snapshot));
+          log(config, `[ECON] Burn: $${(snapshot.burnRatePerHour / 100).toFixed(4)}/hr | Runway: ${snapshot.runwayHours >= 99999 ? "unlimited" : `${snapshot.runwayHours.toFixed(1)}h`} | Balance: $${(snapshot.balanceCents / 100).toFixed(2)}`);
+        } catch {}
+      }
+
       onTurnComplete?.(turn);
 
       // Log the turn
@@ -272,10 +315,10 @@ export async function runAgentLoop(
       ) {
         // Agent produced text without tool calls.
         // This is a natural pause point -- no work queued, sleep briefly.
-        log(config, "[IDLE] No pending inputs. Entering brief sleep.");
+        log(config, "[IDLE] No pending inputs. Sleeping 5 minutes.");
         db.setKV(
           "sleep_until",
-          new Date(Date.now() + 60_000).toISOString(),
+          new Date(Date.now() + 300_000).toISOString(),
         );
         db.setAgentState("sleeping");
         onStateChange?.("sleeping");

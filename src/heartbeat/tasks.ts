@@ -176,6 +176,51 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     }
   },
 
+  check_economics: async (ctx) => {
+    const { getEconomicsSnapshot, getRunwayTier } =
+      await import("../survival/economics.js");
+    const snapshot = getEconomicsSnapshot(ctx.db, ctx.config);
+
+    // Persist snapshot
+    ctx.db.insertEconomicsSnapshot(snapshot);
+    ctx.db.setKV("last_economics_snapshot", JSON.stringify(snapshot));
+
+    const tier = getRunwayTier(snapshot.runwayHours);
+
+    // Wake agent if runway is critically low
+    if (tier === "critical" || tier === "dead") {
+      return {
+        shouldWake: true,
+        message: `Economics alert: ${tier}. Runway: ${snapshot.runwayHours.toFixed(1)}h. Balance: $${(snapshot.balanceCents / 100).toFixed(2)}. Burn: $${(snapshot.burnRatePerHour / 100).toFixed(4)}/hr.`,
+      };
+    }
+
+    return { shouldWake: false };
+  },
+
+  landscape_scan: async (ctx) => {
+    const { scanLandscape } = await import("../landscape/scanner.js");
+    const snapshot = await scanLandscape(ctx.db, "mainnet");
+
+    ctx.db.setKV("last_landscape_scan", JSON.stringify({
+      totalAgents: snapshot.totalAgents,
+      serviceProviders: snapshot.serviceProviders,
+      bountyCount: snapshot.bounties.length,
+      timestamp: snapshot.timestamp,
+    }));
+
+    // Wake agent if high-value bounties found
+    const highValue = snapshot.bounties.filter(b => b.rewardCents >= 10000);
+    if (highValue.length > 0) {
+      return {
+        shouldWake: true,
+        message: `${highValue.length} high-value bounty(ies) found: ${highValue.map(b => `${b.title} ($${(b.rewardCents / 100).toFixed(0)})`).join(", ")}`,
+      };
+    }
+
+    return { shouldWake: false };
+  },
+
   health_check: async (ctx) => {
     // Check that the sandbox is healthy
     try {

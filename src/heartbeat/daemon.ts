@@ -145,8 +145,8 @@ export function createHeartbeatDaemon(
     if (running) return;
     running = true;
 
-    // Get tick interval -- default 60 seconds
-    const tickMs = config.logLevel === "debug" ? 15_000 : 60_000;
+    // Get tick interval -- default 5 minutes (was 60s, slowed to reduce token burn)
+    const tickMs = config.logLevel === "debug" ? 15_000 : 300_000;
 
     // Run first tick immediately
     tick().catch((err) => {

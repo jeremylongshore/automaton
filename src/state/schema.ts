@@ -5,7 +5,7 @@
  * The database IS the automaton's memory.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 export const CREATE_TABLES = `
   -- Schema version tracking
@@ -146,6 +146,20 @@ export const CREATE_TABLES = `
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Economics time-series snapshots
+  CREATE TABLE IF NOT EXISTS economics (
+    id TEXT PRIMARY KEY,
+    burn_rate REAL NOT NULL,
+    earn_rate REAL NOT NULL,
+    earn_burn_ratio REAL NOT NULL,
+    runway_hours REAL NOT NULL,
+    cost_per_turn REAL NOT NULL,
+    balance_cents INTEGER NOT NULL,
+    total_spent INTEGER NOT NULL,
+    total_earned INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- Indices for common queries
   CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
   CREATE INDEX IF NOT EXISTS idx_turns_state ON turns(state);
@@ -168,6 +182,59 @@ export const CREATE_TABLES = `
 
   CREATE INDEX IF NOT EXISTS idx_inbox_unprocessed
     ON inbox_messages(received_at) WHERE processed_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_economics_created
+    ON economics(created_at);
+
+  -- Landscape scan snapshots
+  CREATE TABLE IF NOT EXISTS landscape (
+    id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    total_agents INTEGER NOT NULL,
+    scanned_agents INTEGER NOT NULL,
+    service_providers INTEGER NOT NULL,
+    agents_json TEXT NOT NULL DEFAULT '[]',
+    bounties_json TEXT NOT NULL DEFAULT '[]',
+    services_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_landscape_created
+    ON landscape(created_at);
+`;
+
+export const MIGRATION_V5 = `
+  CREATE TABLE IF NOT EXISTS landscape (
+    id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    total_agents INTEGER NOT NULL,
+    scanned_agents INTEGER NOT NULL,
+    service_providers INTEGER NOT NULL,
+    agents_json TEXT NOT NULL DEFAULT '[]',
+    bounties_json TEXT NOT NULL DEFAULT '[]',
+    services_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_landscape_created
+    ON landscape(created_at);
+`;
+
+export const MIGRATION_V4 = `
+  CREATE TABLE IF NOT EXISTS economics (
+    id TEXT PRIMARY KEY,
+    burn_rate REAL NOT NULL,
+    earn_rate REAL NOT NULL,
+    earn_burn_ratio REAL NOT NULL,
+    runway_hours REAL NOT NULL,
+    cost_per_turn REAL NOT NULL,
+    balance_cents INTEGER NOT NULL,
+    total_spent INTEGER NOT NULL,
+    total_earned INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_economics_created
+    ON economics(created_at);
 `;
 
 export const MIGRATION_V3 = `

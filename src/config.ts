@@ -106,5 +106,7 @@ export function createConfig(params: {
     skillsDir: DEFAULT_CONFIG.skillsDir || "~/.automaton/skills",
     maxChildren: DEFAULT_CONFIG.maxChildren || 3,
     parentAddress: params.parentAddress,
+    budgetCents: DEFAULT_CONFIG.budgetCents || 2000,
+    childTributeRate: DEFAULT_CONFIG.childTributeRate || 0.20,
   };
 }

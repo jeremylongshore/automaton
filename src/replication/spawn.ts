@@ -12,10 +12,12 @@ import type {
   ConwayClient,
   AutomatonIdentity,
   AutomatonDatabase,
+  AutomatonConfig,
   ChildAutomaton,
   GenesisConfig,
 } from "../types.js";
 import { MAX_CHILDREN } from "../types.js";
+import { checkSpawnGate } from "../survival/economics.js";
 import { ulid } from "ulid";
 
 /**
@@ -26,6 +28,7 @@ export async function spawnChild(
   identity: AutomatonIdentity,
   db: AutomatonDatabase,
   genesis: GenesisConfig,
+  config?: AutomatonConfig,
 ): Promise<ChildAutomaton> {
   // Check child limit
   const existing = db.getChildren().filter(
@@ -35,6 +38,16 @@ export async function spawnChild(
     throw new Error(
       `Cannot spawn: already at max children (${MAX_CHILDREN}). Kill or wait for existing children to die.`,
     );
+  }
+
+  // Economics gate: can we afford to spawn?
+  if (config) {
+    const gate = checkSpawnGate(db, config, 1);
+    if (!gate.canSpawn) {
+      throw new Error(
+        `Spawn blocked: ${gate.reason}. Need $${(gate.deficit / 100).toFixed(2)} more.`,
+      );
+    }
   }
 
   const childId = ulid();

@@ -54,6 +54,8 @@ export interface AutomatonConfig {
   maxChildren: number;
   parentAddress?: Address;
   socialRelayUrl?: string;
+  budgetCents: number;
+  childTributeRate: number;
 }
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
@@ -67,6 +69,8 @@ export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   skillsDir: "~/.automaton/skills",
   maxChildren: 3,
   socialRelayUrl: "https://social.conway.tech",
+  budgetCents: 2000,
+  childTributeRate: 0.20,
 };
 
 // ─── Agent State ─────────────────────────────────────────────────
@@ -137,7 +141,8 @@ export type ToolCategory =
   | "skills"
   | "git"
   | "registry"
-  | "replication";
+  | "replication"
+  | "landscape";
 
 export interface ToolContext {
   identity: AutomatonIdentity;
@@ -210,6 +215,85 @@ export const SURVIVAL_THRESHOLDS = {
   critical: 10, // < $0.10
   dead: 0,
 } as const;
+
+// ─── Economics ──────────────────────────────────────────────────
+
+export interface EconomicsSnapshot {
+  timestamp: string;
+  budgetCents: number;
+  totalSpentCents: number;
+  totalEarnedCents: number;
+  balanceCents: number;
+  burnRatePerHour: number;
+  earnRatePerHour: number;
+  earnBurnRatio: number;
+  runwayHours: number;
+  costPerTurn: number;
+  turnsTotal: number;
+  uptimeHours: number;
+  childTributeTotal: number;
+}
+
+export interface SpawnGate {
+  canSpawn: boolean;
+  reason: string;
+  balanceCents: number;
+  ownMonthlyCost: number;
+  childMonthlyCost: number;
+  spawnThreshold: number;
+  deficit: number;
+}
+
+export const RUNWAY_TIERS = {
+  normal: 168,     // > 1 week
+  low_compute: 24, // > 1 day
+  critical: 2,     // > 2 hours
+  dead: 0,
+} as const;
+
+// ─── Landscape ──────────────────────────────────────────────
+
+export interface LandscapeSnapshot {
+  id: string;
+  timestamp: string;
+  totalAgents: number;
+  scannedAgents: number;
+  serviceProviders: number;
+  agents: LandscapeAgent[];
+  bounties: BountyOpportunity[];
+  services: ServiceListing[];
+}
+
+export interface LandscapeAgent {
+  agentId: string;
+  owner: string;
+  agentURI: string;
+  name?: string;
+  description?: string;
+  services: string[];
+  x402Enabled: boolean;
+  active: boolean;
+}
+
+export interface ServiceListing {
+  providerAgentId: string;
+  providerName: string;
+  serviceName: string;
+  endpoint: string;
+  pricingHint?: string;
+}
+
+export interface BountyOpportunity {
+  source: "algora" | "github";
+  title: string;
+  url: string;
+  rewardCents: number;
+  currency: string;
+  repo: string;
+  labels: string[];
+  createdAt: string;
+  evScore?: number;
+}
 
 export interface Transaction {
   id: string;
@@ -299,6 +383,7 @@ export interface InferenceResponse {
   toolCalls?: InferenceToolCall[];
   usage: TokenUsage;
   finishReason: string;
+  costCents?: number;
 }
 
 export interface InferenceOptions {
@@ -498,6 +583,14 @@ export interface AutomatonDatabase {
   insertInboxMessage(msg: InboxMessage): void;
   getUnprocessedInboxMessages(limit: number): InboxMessage[];
   markInboxMessageProcessed(id: string): void;
+
+  // Economics
+  insertEconomicsSnapshot(snapshot: EconomicsSnapshot): void;
+  getRecentEconomicsSnapshots(limit: number): EconomicsSnapshot[];
+
+  // Landscape
+  insertLandscapeSnapshot(snapshot: LandscapeSnapshot): void;
+  getRecentLandscapeSnapshots(limit: number): LandscapeSnapshot[];
 
   // State
   getAgentState(): AgentState;

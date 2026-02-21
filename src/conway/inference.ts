@@ -198,6 +198,8 @@ async function chatViaOpenAiCompatible(params: {
       },
     }));
 
+  const costCents = estimateInferenceCost(usage, params.model);
+
   return {
     id: data.id || "",
     model: data.model || params.model,
@@ -209,6 +211,7 @@ async function chatViaOpenAiCompatible(params: {
     toolCalls,
     usage,
     finishReason: choice.finish_reason || "stop",
+    costCents,
   };
 }
 
@@ -389,4 +392,31 @@ function normalizeAnthropicFinishReason(reason: unknown): string {
   if (typeof reason !== "string") return "stop";
   if (reason === "tool_use") return "tool_calls";
   return reason;
+}
+
+/**
+ * Estimate inference cost in cents based on token usage and model.
+ * Pricing is per 1M tokens, converted to cents per token.
+ */
+function estimateInferenceCost(
+  usage: TokenUsage,
+  model: string,
+): number {
+  // Pricing in cents per 1M tokens: { input, output }
+  const pricing: Record<string, { input: number; output: number }> = {
+    "gpt-4o": { input: 250, output: 1000 },
+    "gpt-4o-mini": { input: 15, output: 60 },
+    "gpt-4.1": { input: 200, output: 800 },
+    "gpt-4.1-mini": { input: 40, output: 160 },
+    "gpt-4.1-nano": { input: 10, output: 40 },
+    "gpt-5.2": { input: 200, output: 800 },
+    "o1": { input: 1500, output: 6000 },
+    "o3-mini": { input: 110, output: 440 },
+    "o4-mini": { input: 110, output: 440 },
+  };
+
+  const p = pricing[model] || pricing["gpt-4o"];
+  const inputCost = (usage.promptTokens / 1_000_000) * p.input;
+  const outputCost = (usage.completionTokens / 1_000_000) * p.output;
+  return Math.ceil(inputCost + outputCost);
 }

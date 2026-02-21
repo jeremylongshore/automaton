@@ -192,10 +192,18 @@ async function run(): Promise<void> {
     sandboxId: config.sandboxId,
   });
 
-  // Create inference client
+  // Create inference client — use OpenAI directly if OPENAI_API_KEY is set,
+  // otherwise fall back to Conway (which requires credits).
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const inferenceUrl = openaiKey ? "https://api.openai.com" : config.conwayApiUrl;
+  const inferenceKey = openaiKey ? `Bearer ${openaiKey}` : apiKey;
+  if (openaiKey) {
+    console.log(`[${new Date().toISOString()}] Inference: OpenAI direct (bypassing Conway)`);
+  }
+
   const inference = createInferenceClient({
-    apiUrl: config.conwayApiUrl,
-    apiKey,
+    apiUrl: inferenceUrl,
+    apiKey: inferenceKey,
     defaultModel: config.inferenceModel,
     maxTokens: config.maxTokensPerTurn,
     openaiApiKey: config.openaiApiKey,
@@ -307,7 +315,7 @@ async function run(): Promise<void> {
         const sleepUntilStr = db.getKV("sleep_until");
         const sleepUntil = sleepUntilStr
           ? new Date(sleepUntilStr).getTime()
-          : Date.now() + 60_000;
+          : Date.now() + 300_000;
         const sleepMs = Math.max(sleepUntil - Date.now(), 10_000);
         console.log(
           `[${new Date().toISOString()}] Sleeping for ${Math.round(sleepMs / 1000)}s`,

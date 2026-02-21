@@ -23,8 +23,10 @@ import type {
   RegistryEntry,
   ReputationEntry,
   InboxMessage,
+  EconomicsSnapshot,
+  LandscapeSnapshot,
 } from "../types.js";
-import { SCHEMA_VERSION, CREATE_TABLES, MIGRATION_V2, MIGRATION_V3 } from "./schema.js";
+import { SCHEMA_VERSION, CREATE_TABLES, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5 } from "./schema.js";
 
 export function createDatabase(dbPath: string): AutomatonDatabase {
   // Ensure directory exists
@@ -54,6 +56,14 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
 
   if (currentVersion < 3) {
     db.exec(MIGRATION_V3);
+  }
+
+  if (currentVersion < 4) {
+    db.exec(MIGRATION_V4);
+  }
+
+  if (currentVersion < 5) {
+    db.exec(MIGRATION_V5);
   }
 
   if (currentVersion < SCHEMA_VERSION) {
@@ -434,6 +444,63 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     ).run(id);
   };
 
+  // ─── Economics ──────────────────────────────────────────────
+
+  const insertEconomicsSnapshot = (snapshot: EconomicsSnapshot): void => {
+    const id = `econ_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    db.prepare(
+      `INSERT INTO economics (id, burn_rate, earn_rate, earn_burn_ratio, runway_hours, cost_per_turn, balance_cents, total_spent, total_earned, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      snapshot.burnRatePerHour,
+      snapshot.earnRatePerHour,
+      snapshot.earnBurnRatio,
+      snapshot.runwayHours,
+      snapshot.costPerTurn,
+      snapshot.balanceCents,
+      snapshot.totalSpentCents,
+      snapshot.totalEarnedCents,
+      snapshot.timestamp,
+    );
+  };
+
+  const getRecentEconomicsSnapshots = (limit: number): EconomicsSnapshot[] => {
+    const rows = db
+      .prepare(
+        "SELECT * FROM economics ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(limit) as any[];
+    return rows.map(deserializeEconomics).reverse();
+  };
+
+  // ─── Landscape ──────────────────────────────────────────────
+
+  const insertLandscapeSnapshot = (snapshot: LandscapeSnapshot): void => {
+    db.prepare(
+      `INSERT INTO landscape (id, timestamp, total_agents, scanned_agents, service_providers, agents_json, bounties_json, services_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      snapshot.id,
+      snapshot.timestamp,
+      snapshot.totalAgents,
+      snapshot.scannedAgents,
+      snapshot.serviceProviders,
+      JSON.stringify(snapshot.agents),
+      JSON.stringify(snapshot.bounties),
+      JSON.stringify(snapshot.services),
+    );
+  };
+
+  const getRecentLandscapeSnapshots = (limit: number): LandscapeSnapshot[] => {
+    const rows = db
+      .prepare(
+        "SELECT * FROM landscape ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(limit) as any[];
+    return rows.map(deserializeLandscape).reverse();
+  };
+
   // ─── Agent State ─────────────────────────────────────────────
 
   const getAgentState = (): AgentState => {
@@ -487,6 +554,10 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     insertInboxMessage,
     getUnprocessedInboxMessages,
     markInboxMessageProcessed,
+    insertEconomicsSnapshot,
+    getRecentEconomicsSnapshots,
+    insertLandscapeSnapshot,
+    getRecentLandscapeSnapshots,
     getAgentState,
     setAgentState,
     close,
@@ -627,5 +698,36 @@ function deserializeReputation(row: any): ReputationEntry {
     comment: row.comment,
     txHash: row.tx_hash ?? undefined,
     timestamp: row.created_at,
+  };
+}
+
+function deserializeEconomics(row: any): EconomicsSnapshot {
+  return {
+    timestamp: row.created_at,
+    budgetCents: 0,
+    totalSpentCents: row.total_spent,
+    totalEarnedCents: row.total_earned,
+    balanceCents: row.balance_cents,
+    burnRatePerHour: row.burn_rate,
+    earnRatePerHour: row.earn_rate,
+    earnBurnRatio: row.earn_burn_ratio,
+    runwayHours: row.runway_hours,
+    costPerTurn: row.cost_per_turn,
+    turnsTotal: 0,
+    uptimeHours: 0,
+    childTributeTotal: 0,
+  };
+}
+
+function deserializeLandscape(row: any): LandscapeSnapshot {
+  return {
+    id: row.id,
+    timestamp: row.timestamp,
+    totalAgents: row.total_agents,
+    scannedAgents: row.scanned_agents,
+    serviceProviders: row.service_providers,
+    agents: JSON.parse(row.agents_json || "[]"),
+    bounties: JSON.parse(row.bounties_json || "[]"),
+    services: JSON.parse(row.services_json || "[]"),
   };
 }

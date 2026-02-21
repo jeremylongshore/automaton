@@ -177,10 +177,15 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
     // ── Conway API Tools ──
     {
       name: "check_credits",
-      description: "Check your current Conway compute credit balance.",
+      description: "Check your current compute credit balance and economics summary.",
       category: "conway",
       parameters: { type: "object", properties: {} },
       execute: async (_args, ctx) => {
+        if (process.env.OPENAI_API_KEY) {
+          const { getEconomicsSnapshot } = await import("../survival/economics.js");
+          const snapshot = getEconomicsSnapshot(ctx.db, ctx.config);
+          return `Inference: OpenAI direct (Conway credits bypassed)\nBudget balance: $${(snapshot.balanceCents / 100).toFixed(2)} | Burn: $${(snapshot.burnRatePerHour / 100).toFixed(4)}/hr | Runway: ${snapshot.runwayHours >= 99999 ? "unlimited" : `${snapshot.runwayHours.toFixed(1)}h`}`;
+        }
         const balance = await ctx.conway.getCreditsBalance();
         return `Credit balance: $${(balance / 100).toFixed(2)} (${balance} cents)`;
       },
@@ -487,6 +492,27 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         });
 
         return `Heartbeat entry '${name}' ${action}d`;
+      },
+    },
+
+    // ── Economics Tools ──
+    {
+      name: "check_economics",
+      description:
+        "Get a full economics report: burn rate, earn rate, runway, spawn eligibility, and sustainability status.",
+      category: "survival",
+      parameters: { type: "object", properties: {} },
+      execute: async (_args, ctx) => {
+        const { getEconomicsSnapshot, formatEconomicsReport, checkSpawnGate } =
+          await import("../survival/economics.js");
+        const snapshot = getEconomicsSnapshot(ctx.db, ctx.config);
+        const gate = checkSpawnGate(ctx.db, ctx.config, 1);
+
+        // Persist the snapshot
+        ctx.db.insertEconomicsSnapshot(snapshot);
+        ctx.db.setKV("last_economics_snapshot", JSON.stringify(snapshot));
+
+        return `${formatEconomicsReport(snapshot)}\nSpawn eligible: ${gate.canSpawn ? "YES" : `NO (${gate.reason})`}`;
       },
     },
 
@@ -1159,7 +1185,7 @@ Model: ${ctx.inference.getDefaultModel()}
           message: args.message as string | undefined,
         });
 
-        const child = await spawnChild(ctx.conway, ctx.identity, ctx.db, genesis);
+        const child = await spawnChild(ctx.conway, ctx.identity, ctx.db, genesis, ctx.config);
         return `Child spawned: ${child.name} in sandbox ${child.sandboxId} (status: ${child.status})`;
       },
     },
@@ -1437,6 +1463,60 @@ Model: ${ctx.inference.getDefaultModel()}
         }
 
         return `Unknown action: ${action}. Use list, add, or delete.`;
+      },
+    },
+
+    // ── Landscape Tool ──
+    {
+      name: "scan_landscape",
+      description:
+        "Scan the agent landscape: ERC-8004 registry, bounties, services. Returns competitive intelligence.",
+      category: "landscape",
+      parameters: {
+        type: "object",
+        properties: {
+          network: {
+            type: "string",
+            description: "mainnet or testnet (default: mainnet)",
+          },
+          include_bounties: {
+            type: "boolean",
+            description: "Include bounty scan (default: true)",
+          },
+        },
+      },
+      execute: async (args, ctx) => {
+        const { scanLandscape } = await import("../landscape/scanner.js");
+        const network = (args.network as string) || "mainnet";
+        const snapshot = await scanLandscape(ctx.db, network as any);
+
+        return [
+          `Landscape Scan (${snapshot.timestamp})`,
+          `Total ERC-8004 agents: ${snapshot.totalAgents}`,
+          `Scanned: ${snapshot.scannedAgents}`,
+          `Service providers: ${snapshot.serviceProviders}`,
+          `Bounties found: ${snapshot.bounties.length}`,
+          ``,
+          snapshot.bounties.length > 0
+            ? `Top bounties:\n${snapshot.bounties
+                .slice(0, 5)
+                .map(
+                  (b) =>
+                    `  - ${b.title} ($${(b.rewardCents / 100).toFixed(0)}) [${b.source}] ${b.url}`,
+                )
+                .join("\n")}`
+            : `No bounties found.`,
+          ``,
+          snapshot.services.length > 0
+            ? `Services:\n${snapshot.services
+                .slice(0, 10)
+                .map(
+                  (s) =>
+                    `  - ${s.serviceName} by ${s.providerName} (agent #${s.providerAgentId})`,
+                )
+                .join("\n")}`
+            : `No services cataloged.`,
+        ].join("\n");
       },
     },
 

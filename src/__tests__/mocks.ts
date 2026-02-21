@@ -275,6 +275,8 @@ export function createTestConfig(
     skillsDir: "/tmp/test-skills",
     maxChildren: 3,
     socialRelayUrl: "https://social.conway.tech",
+    budgetCents: 2000,
+    childTributeRate: 0.20,
     ...overrides,
   };
 }
