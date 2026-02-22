@@ -32,7 +32,6 @@ services:
   # Any curl/wget/git to the internet FAILS at the network layer.
   scout:
     build: .
-    user: "1000:1000"
     networks:
       - sandbox-internal
     dns: []
@@ -66,6 +65,8 @@ services:
       CONTROL_PLANE_URL: http://moat-control-plane:8001
       TRUST_PLANE_URL: http://moat-trust-plane:8003
       MOAT_AUTH_DISABLED: "true"
+      # OpenAI API key — gateway proxies inference for sandboxed agents
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       # IRSB on-chain receipts
       IRSB_DRY_RUN: "${IRSB_DRY_RUN:-true}"
       IRSB_RPC_URL: "${IRSB_RPC_URL:-}"

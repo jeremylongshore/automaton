@@ -82,6 +82,20 @@ export function createInferenceClient(
       });
     }
 
+    // Route through Moat Gateway when running in sandbox (MOAT_GATEWAY_URL set).
+    // The gateway proxies the request to OpenAI and injects the API key —
+    // the agent never sees or needs the raw key.
+    // Check model pattern directly: the agent may not have an openaiApiKey
+    // (credentials live in Moat), so backend might resolve to "conway".
+    const moatGatewayUrl = process.env.MOAT_GATEWAY_URL;
+    const isOpenAiModel = /^(gpt|o[1-9]|chatgpt)/i.test(model);
+    if (moatGatewayUrl && (backend === "openai" || isOpenAiModel)) {
+      return chatViaMoatGateway({
+        moatGatewayUrl,
+        body,
+      });
+    }
+
     const openAiLikeApiUrl =
       backend === "openai" ? "https://api.openai.com" : apiUrl;
     const openAiLikeApiKey =
@@ -203,6 +217,75 @@ async function chatViaOpenAiCompatible(params: {
   return {
     id: data.id || "",
     model: data.model || params.model,
+    message: {
+      role: message.role,
+      content: message.content || "",
+      tool_calls: toolCalls,
+    },
+    toolCalls,
+    usage,
+    finishReason: choice.finish_reason || "stop",
+    costCents,
+  };
+}
+
+async function chatViaMoatGateway(params: {
+  moatGatewayUrl: string;
+  body: Record<string, unknown>;
+}): Promise<InferenceResponse> {
+  const model = params.body.model as string;
+  const tenantId = process.env.MOAT_TENANT_ID || "automaton";
+  const resp = await fetch(`${params.moatGatewayUrl}/execute/openai.inference`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Tenant-ID": tenantId,
+    },
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      scope: "execute",
+      params: params.body,
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Moat gateway error: ${resp.status}: ${text}`);
+  }
+
+  const receipt = await resp.json() as any;
+
+  // The Moat receipt wraps the OpenAI response in result.
+  // result contains: { id, model, choices, usage, created }
+  const data = receipt.result || receipt;
+  const choice = data.choices?.[0];
+
+  if (!choice) {
+    throw new Error("No completion choice in Moat gateway response");
+  }
+
+  const message = choice.message;
+  const usage: TokenUsage = {
+    promptTokens: data.usage?.prompt_tokens || 0,
+    completionTokens: data.usage?.completion_tokens || 0,
+    totalTokens: data.usage?.total_tokens || 0,
+  };
+
+  const toolCalls: InferenceToolCall[] | undefined =
+    message.tool_calls?.map((tc: any) => ({
+      id: tc.id,
+      type: "function" as const,
+      function: {
+        name: tc.function.name,
+        arguments: tc.function.arguments,
+      },
+    }));
+
+  const costCents = estimateInferenceCost(usage, model);
+
+  return {
+    id: data.id || "",
+    model: data.model || model,
     message: {
       role: message.role,
       content: message.content || "",

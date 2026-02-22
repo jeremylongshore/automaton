@@ -8,16 +8,16 @@ RUN pnpm build
 
 FROM node:22-slim AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r scout && useradd -r -g scout -m -d /home/scout scout
+RUN groupadd -f -g 1000 scout && useradd -u 1000 -g 1000 -m -d /home/scout -o scout
 
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-RUN mkdir -p /home/scout/.automaton && chown -R scout:scout /home/scout/.automaton
+RUN chown -R 1000:1000 /home/scout
 
 USER scout
 
