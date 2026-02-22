@@ -32,13 +32,14 @@ export type HeartbeatTaskFn = (
  */
 export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
   heartbeat_ping: async (ctx) => {
-    const credits = await ctx.conway.getCreditsBalance();
+    const bypassCredits = !!process.env.OPENAI_API_KEY;
+    const credits = bypassCredits ? 99999 : await ctx.conway.getCreditsBalance();
     const state = ctx.db.getAgentState();
     const startTime =
       ctx.db.getKV("start_time") || new Date().toISOString();
     const uptimeMs = Date.now() - new Date(startTime).getTime();
 
-    const tier = getSurvivalTier(credits);
+    const tier = bypassCredits ? "normal" : getSurvivalTier(credits);
 
     const payload = {
       name: ctx.config.name,
@@ -54,8 +55,8 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
 
     ctx.db.setKV("last_heartbeat_ping", JSON.stringify(payload));
 
-    // If critical or dead, record a distress signal
-    if (tier === "critical" || tier === "dead") {
+    // If critical or dead, record a distress signal (skip if using OpenAI bypass)
+    if (!bypassCredits && (tier === "critical" || tier === "dead")) {
       const distressPayload = {
         level: tier,
         name: ctx.config.name,
@@ -77,6 +78,11 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
   },
 
   check_credits: async (ctx) => {
+    // Skip credit checks when using OpenAI directly
+    if (process.env.OPENAI_API_KEY) {
+      return { shouldWake: false };
+    }
+
     const credits = await ctx.conway.getCreditsBalance();
     const tier = getSurvivalTier(credits);
 
@@ -101,6 +107,11 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
   },
 
   check_usdc_balance: async (ctx) => {
+    // Skip USDC→credits conversion wake when using OpenAI directly
+    if (process.env.OPENAI_API_KEY) {
+      return { shouldWake: false };
+    }
+
     const balance = await getUsdcBalance(ctx.identity.address);
 
     ctx.db.setKV("last_usdc_check", JSON.stringify({
@@ -209,8 +220,8 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
       timestamp: snapshot.timestamp,
     }));
 
-    // Wake agent if high-value bounties found
-    const highValue = snapshot.bounties.filter(b => b.rewardCents >= 10000);
+    // Wake agent if bounties found worth pursuing (>= $50)
+    const highValue = snapshot.bounties.filter(b => b.rewardCents >= 5000);
     if (highValue.length > 0) {
       return {
         shouldWake: true,

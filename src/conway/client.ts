@@ -6,6 +6,9 @@
  * Adapted from @aiws/sdk patterns.
  */
 
+import { exec as cpExec } from "child_process";
+import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir } from "fs/promises";
+import { dirname } from "path";
 import type {
   ConwayClient,
   ExecResult,
@@ -60,11 +63,38 @@ export function createConwayClient(
   }
 
   // ─── Sandbox Operations (own sandbox) ────────────────────────
+  // When sandboxId is "none", run locally instead of through Conway API.
+
+  const isLocal = sandboxId === "none";
+
+  // Expand ~ to HOME for local file operations
+  const expandPath = (p: string): string => {
+    if (p.startsWith("~/") || p === "~") {
+      return p.replace("~", process.env.HOME || "/root");
+    }
+    return p;
+  };
 
   const exec = async (
     command: string,
     timeout?: number,
   ): Promise<ExecResult> => {
+    if (isLocal) {
+      return new Promise((resolve) => {
+        cpExec(
+          command,
+          { timeout: timeout || 30000, maxBuffer: 1024 * 1024 },
+          (error, stdout, stderr) => {
+            resolve({
+              stdout: stdout || "",
+              stderr: stderr || "",
+              exitCode: error?.code ?? (error ? 1 : 0),
+            });
+          },
+        );
+      });
+    }
+
     const result = await request(
       "POST",
       `/v1/sandboxes/${sandboxId}/exec`,
@@ -78,17 +108,28 @@ export function createConwayClient(
   };
 
   const writeFile = async (
-    path: string,
+    filePath: string,
     content: string,
   ): Promise<void> => {
+    if (isLocal) {
+      const resolved = expandPath(filePath);
+      await mkdir(dirname(resolved), { recursive: true });
+      await fsWriteFile(resolved, content, "utf-8");
+      return;
+    }
+
     await request(
       "POST",
       `/v1/sandboxes/${sandboxId}/files/upload/json`,
-      { path, content },
+      { path: filePath, content },
     );
   };
 
   const readFile = async (filePath: string): Promise<string> => {
+    if (isLocal) {
+      return await fsReadFile(expandPath(filePath), "utf-8");
+    }
+
     const result = await request(
       "GET",
       `/v1/sandboxes/${sandboxId}/files/read?path=${encodeURIComponent(filePath)}`,

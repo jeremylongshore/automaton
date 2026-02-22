@@ -245,8 +245,8 @@ export interface SpawnGate {
 }
 
 export const RUNWAY_TIERS = {
-  normal: 168,     // > 1 week
-  low_compute: 24, // > 1 day
+  normal: 48,      // > 2 days
+  low_compute: 8,  // > 8 hours
   critical: 2,     // > 2 hours
   dead: 0,
 } as const;

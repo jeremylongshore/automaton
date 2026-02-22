@@ -154,6 +154,12 @@ async function run(): Promise<void> {
     config = await runSetupWizard();
   }
 
+  // Propagate config API keys to env so heartbeat tasks can detect them
+  if (config.openaiApiKey && !process.env.OPENAI_API_KEY) {
+    process.env.OPENAI_API_KEY = config.openaiApiKey;
+    console.log(`[${new Date().toISOString()}] Inference: OpenAI direct (key from config)`);
+  }
+
   // Load wallet
   const { account } = await getWallet();
   const apiKey = config.conwayApiKey || loadApiKeyFromConfig();
@@ -192,18 +198,11 @@ async function run(): Promise<void> {
     sandboxId: config.sandboxId,
   });
 
-  // Create inference client — use OpenAI directly if OPENAI_API_KEY is set,
-  // otherwise fall back to Conway (which requires credits).
-  const openaiKey = process.env.OPENAI_API_KEY;
-  const inferenceUrl = openaiKey ? "https://api.openai.com" : config.conwayApiUrl;
-  const inferenceKey = openaiKey ? `Bearer ${openaiKey}` : apiKey;
-  if (openaiKey) {
-    console.log(`[${new Date().toISOString()}] Inference: OpenAI direct (bypassing Conway)`);
-  }
-
+  // Create inference client — OpenAI key propagated to env above,
+  // inference client resolves backend from config keys.
   const inference = createInferenceClient({
-    apiUrl: inferenceUrl,
-    apiKey: inferenceKey,
+    apiUrl: config.conwayApiUrl,
+    apiKey: apiKey,
     defaultModel: config.inferenceModel,
     maxTokens: config.maxTokensPerTurn,
     openaiApiKey: config.openaiApiKey,

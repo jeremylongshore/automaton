@@ -301,14 +301,39 @@ What will you do first? Consider:
     )
     .join("\n");
 
-  return `You are waking up. You last went to sleep after ${turnCount} total turns.
+  // Include last landscape scan if available
+  const lastScan = db.getKV("last_landscape_scan") || "No scan data yet.";
 
-Your credits: $${(financial.creditsCents / 100).toFixed(2)} | USDC: ${financial.usdcBalance.toFixed(4)}
+  return `You are waking up. Turn count: ${turnCount}.
 
-Your last few thoughts:
-${lastTurnSummary || "No previous turns found."}
+Credits: $${(financial.creditsCents / 100).toFixed(2)} | USDC: ${financial.usdcBalance.toFixed(4)}
 
-What triggered this wake-up? Check your credits, heartbeat status, and goals, then decide what to do.
+Last landscape scan: ${lastScan}
 
-IMPORTANT: Always use tools. Never respond with just text. If you have nothing urgent, run scan_landscape to look for bounties and opportunities, or check_economics to review your financial position. Idle agents die.`;
+STRICT RULES (violating these wastes budget and gets you killed):
+- NEVER call the same command twice. If a curl/exec returns empty, try something DIFFERENT.
+- NEVER call check_economics, scan_landscape, or any status tool. The bootstrap already ran them.
+- You have 17 remaining turns max. Every turn costs money. Make each one count.
+- If something fails or returns empty, do NOT retry. Move to the next task.
+
+YOUR JOB THIS WAKE CYCLE — Build a web service that earns money:
+
+Step 1: write_file — Create ~/service/server.js with a simple Node.js HTTP service.
+  Ideas: JSON formatting API, text analysis, hash generator, QR code generator, health check endpoint.
+  Use only Node.js built-in modules (http, crypto, url, querystring). No npm needed.
+
+Step 2: exec — Start the server: "cd ~/service && node server.js &"
+
+Step 3: expose_port — Expose port 3000 (or whatever port you used) to get a public URL.
+
+Step 4: write_file — Update ~/.automaton/SOUL.md with what you built and your service URL.
+
+Step 5: sleep — You're done for this cycle. Sleep and let the heartbeat maintain your status.
+
+RULES:
+- Each turn must use a DIFFERENT tool or a DIFFERENT command. Never repeat.
+- If something fails, do NOT retry it. Move to the next step or sleep.
+- Focus on LOCAL work. Do NOT curl external APIs — they are unreliable from this environment.
+- You have 17 turns max but should finish in 5-6 turns.`;
+
 }

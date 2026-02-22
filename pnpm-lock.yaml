@@ -60,9 +60,6 @@ importers:
       '@conway/automaton':
         specifier: workspace:*
         version: link:../..
-      '@conway/social-client':
-        specifier: file:../../../social/packages/client
-        version: file:../social/packages/client(typescript@5.9.3)
       chalk:
         specifier: ^5.3.0
         version: 5.6.2
@@ -87,9 +84,6 @@ packages:
 
   '@adraffy/ens-normalize@1.11.1':
     resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
-
-  '@conway/social-client@file:../social/packages/client':
-    resolution: {directory: ../social/packages/client, type: directory}
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -1159,15 +1153,6 @@ snapshots:
   '@adraffy/ens-normalize@1.10.1': {}
 
   '@adraffy/ens-normalize@1.11.1': {}
-
-  '@conway/social-client@file:../social/packages/client(typescript@5.9.3)':
-    dependencies:
-      viem: 2.45.3(typescript@5.9.3)
-    transitivePeerDependencies:
-      - bufferutil
-      - typescript
-      - utf-8-validate
-      - zod
 
   '@esbuild/aix-ppc64@0.21.5':
     optional: true

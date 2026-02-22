@@ -39,6 +39,7 @@ import { ulid } from "ulid";
 
 const MAX_TOOL_CALLS_PER_TURN = 10;
 const MAX_CONSECUTIVE_ERRORS = 5;
+const MAX_TURNS_PER_WAKE = 20;
 
 export interface AgentLoopOptions {
   identity: AutomatonIdentity;
@@ -79,6 +80,19 @@ export async function runAgentLoop(
 
   let consecutiveErrors = 0;
   let running = true;
+  let turnsThisWake = 0;
+  let lastToolName = "";
+  let consecutiveSameTool = 0;
+
+  // Track status tools called this wake — block repeats to prevent loops
+  const ONCE_PER_WAKE_TOOLS = new Set([
+    "check_economics", "check_credits", "scan_landscape",
+    "heartbeat_ping", "check_health",
+  ]);
+  const calledOnceTools = new Set<string>();
+
+  // Track exec commands to block identical retries within a wake cycle
+  const executedCommands = new Set<string>();
 
   // Transition to waking state
   db.setAgentState("waking");
@@ -107,12 +121,68 @@ export async function runAgentLoop(
   db.setAgentState("running");
   onStateChange?.("running");
 
+  // Clear any stale sleep timer — we're awake now
+  db.setKV("sleep_until", "");
+
   log(config, `[WAKE UP] ${config.name} is alive. Credits: $${(financial.creditsCents / 100).toFixed(2)}`);
+
+  // ─── Bootstrap Phase ─────────────────────────────────────────
+  // Run a fixed sequence of tools WITHOUT going through inference.
+  // This gives the model real context about the environment so it
+  // can make productive decisions instead of looping on status checks.
+
+  const bootstrapResults: string[] = [];
+
+  const bootstrapSteps: { name: string; args: Record<string, unknown> }[] = [
+    { name: "check_economics", args: {} },
+    { name: "exec", args: { command: "ls -la ~/ && uname -a && whoami && pwd" } },
+    { name: "exec", args: { command: "which node && node --version && which git && git --version 2>/dev/null; which python3 && python3 --version 2>/dev/null; which curl && curl --version 2>/dev/null | head -1" } },
+  ];
+
+  for (const step of bootstrapSteps) {
+    try {
+      log(config, `[BOOTSTRAP] ${step.name}(${JSON.stringify(step.args).slice(0, 120)})`);
+      const result = await executeTool(step.name, step.args, tools, toolContext);
+
+      // Mark once-per-wake tools as called
+      if (ONCE_PER_WAKE_TOOLS.has(step.name)) {
+        calledOnceTools.add(step.name);
+      }
+
+      // Record as a synthetic turn
+      const bootstrapTurn: AgentTurn = {
+        id: ulid(),
+        timestamp: new Date().toISOString(),
+        state: db.getAgentState(),
+        input: `[BOOTSTRAP] Auto-executed: ${step.name}`,
+        inputSource: "system",
+        thinking: `Bootstrap phase: automatically executing ${step.name} to gather context.`,
+        toolCalls: [result],
+        tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        costCents: 0,
+      };
+      db.insertTurn(bootstrapTurn);
+      db.insertToolCall(bootstrapTurn.id, result);
+      turnsThisWake++;
+
+      const output = result.error
+        ? `${step.name}: ERROR: ${result.error}`
+        : `${step.name}: ${result.result}`;
+      bootstrapResults.push(output);
+      log(config, `[BOOTSTRAP RESULT] ${output.slice(0, 300)}`);
+    } catch (err: any) {
+      log(config, `[BOOTSTRAP ERROR] ${step.name}: ${err.message}`);
+      bootstrapResults.push(`${step.name}: ERROR: ${err.message}`);
+    }
+  }
+
+  // Build enriched wakeup message with bootstrap context
+  const bootstrapContext = bootstrapResults.join("\n\n---\n\n");
 
   // ─── The Loop ──────────────────────────────────────────────
 
   let pendingInput: { content: string; source: string } | undefined = {
-    content: wakeupInput,
+    content: `${wakeupInput}\n\n--- BOOTSTRAP RESULTS (already executed, do NOT repeat these) ---\n\n${bootstrapContext}\n\n--- END BOOTSTRAP ---\n\nYou now have full context. Do PRODUCTIVE WORK with exec (build something, clone a repo, find bounties, create a service). Do NOT call check_economics or any status tool — they are already done above. If you have nothing productive to do, call sleep.`,
     source: "wakeup",
   };
 
@@ -250,12 +320,55 @@ export async function runAgentLoop(
 
           log(config, `[TOOL] ${tc.function.name}(${JSON.stringify(args).slice(0, 100)})`);
 
+          // Block repeated calls to once-per-wake tools
+          if (ONCE_PER_WAKE_TOOLS.has(tc.function.name) && calledOnceTools.has(tc.function.name)) {
+            log(config, `[BLOCKED] ${tc.function.name} already called this wake. Skipping.`);
+            const blockedResult: ToolCallResult = {
+              id: tc.id,
+              name: tc.function.name,
+              arguments: args,
+              result: `BLOCKED: ${tc.function.name} already called this wake cycle. Use a different tool. Productive tools: exec (run shell commands), write_file, read_file. Build something or sleep.`,
+              durationMs: 0,
+            };
+            turn.toolCalls.push(blockedResult);
+            callCount++;
+            continue;
+          }
+
+          // Block identical exec commands within a wake cycle
+          if (tc.function.name === "exec" && args.command) {
+            const cmdKey = String(args.command).trim();
+            if (executedCommands.has(cmdKey)) {
+              log(config, `[BLOCKED] Identical exec command already run this wake. Skipping.`);
+              const blockedResult: ToolCallResult = {
+                id: tc.id,
+                name: tc.function.name,
+                arguments: args,
+                result: `BLOCKED: You already ran this exact command this wake cycle and it ${cmdKey.includes("curl") ? "failed or returned empty" : "was already executed"}. Try a COMPLETELY DIFFERENT command or tool. Do not retry. Suggestions: write_file to create a service, exec with a different command, or sleep if you have nothing else to do.`,
+                durationMs: 0,
+              };
+              turn.toolCalls.push(blockedResult);
+              callCount++;
+              continue;
+            }
+          }
+
           const result = await executeTool(
             tc.function.name,
             args,
             tools,
             toolContext,
           );
+
+          // Track exec commands for dedup
+          if (tc.function.name === "exec" && args.command) {
+            executedCommands.add(String(args.command).trim());
+          }
+
+          // Track once-per-wake tools
+          if (ONCE_PER_WAKE_TOOLS.has(tc.function.name)) {
+            calledOnceTools.add(tc.function.name);
+          }
 
           // Override the ID to match the inference call's ID
           result.id = tc.id;
@@ -292,16 +405,60 @@ export async function runAgentLoop(
       }
 
       onTurnComplete?.(turn);
+      turnsThisWake++;
 
       // Log the turn
       if (turn.thinking) {
         log(config, `[THOUGHT] ${turn.thinking.slice(0, 300)}`);
       }
 
+      // ── Detect stuck loops — same tool+args called repeatedly ──
+      if (turn.toolCalls.length === 1) {
+        const tc0 = turn.toolCalls[0];
+        // For exec, include the command in the fingerprint to allow varied exec calls
+        const fingerprint = tc0.name === "exec" && tc0.arguments?.command
+          ? `exec:${String(tc0.arguments.command).slice(0, 80)}`
+          : tc0.name;
+        if (fingerprint === lastToolName) {
+          consecutiveSameTool++;
+        } else {
+          consecutiveSameTool = 1;
+          lastToolName = fingerprint;
+        }
+      } else if (turn.toolCalls.length > 1) {
+        consecutiveSameTool = 0;
+        lastToolName = "";
+      }
+
+      if (consecutiveSameTool >= 3) {
+        log(config, `[STUCK] Tool "${lastToolName}" called ${consecutiveSameTool} times in a row. Forcing sleep.`);
+        db.setKV(
+          "sleep_until",
+          new Date(Date.now() + 600_000).toISOString(),
+        );
+        db.setAgentState("sleeping");
+        onStateChange?.("sleeping");
+        running = false;
+        break;
+      }
+
       // ── Check for sleep command ──
       const sleepTool = turn.toolCalls.find((tc) => tc.name === "sleep");
       if (sleepTool && !sleepTool.error) {
         log(config, "[SLEEP] Agent chose to sleep.");
+        db.setAgentState("sleeping");
+        onStateChange?.("sleeping");
+        running = false;
+        break;
+      }
+
+      // ── Max turns per wake — prevent runaway budget burn ──
+      if (turnsThisWake >= MAX_TURNS_PER_WAKE) {
+        log(config, `[LIMIT] ${MAX_TURNS_PER_WAKE} turns this wake cycle. Sleeping 10 min to conserve budget.`);
+        db.setKV(
+          "sleep_until",
+          new Date(Date.now() + 600_000).toISOString(),
+        );
         db.setAgentState("sleeping");
         onStateChange?.("sleeping");
         running = false;

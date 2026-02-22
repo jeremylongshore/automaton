@@ -1,0 +1,166 @@
+# Secure Agent Company — Concentric Ring Architecture (intent-scout-001)
+#
+# Inner Ring:  intent-scout-001 (sandbox-internal ONLY, no internet)
+# Middle Ring: Moat Gateway (bridges sandbox ↔ external)
+# Outer Ring:  IRSB (on-chain receipts, future phase)
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f scout
+#   docker compose down
+
+networks:
+  sandbox-internal:
+    driver: bridge
+    internal: true               # NO default gateway → no internet access
+  moat-external:
+    driver: bridge               # Moat ↔ outside world
+
+volumes:
+  scout-state:
+  pgdata:
+
+secrets:
+  scout_private_key:
+    file: ${HOME}/.automaton/private_key.txt
+
+services:
+
+  # ── INNER RING: SANDBOX ──────────────────────────────────────
+  # intent-scout-001 can ONLY reach moat-gateway on sandbox-internal.
+  # dns:[] prevents external hostname resolution.
+  # Any curl/wget/git to the internet FAILS at the network layer.
+  scout:
+    build: .
+    user: "1000:1000"
+    networks:
+      - sandbox-internal
+    dns: []
+    volumes:
+      - ${HOME}/.automaton:/home/scout/.automaton
+    environment:
+      MOAT_GATEWAY_URL: http://moat-gateway:8002
+      MOAT_AUTH_DISABLED: "true"
+      HOME: /home/scout
+    secrets:
+      - scout_private_key
+    depends_on:
+      moat-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── MIDDLE RING: MOAT ────────────────────────────────────────
+  # Gateway is on BOTH networks — the only bridge out of the sandbox.
+  moat-gateway:
+    build:
+      context: ../../moat
+      dockerfile: services/gateway/Dockerfile
+    networks:
+      - sandbox-internal
+      - moat-external
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://moat:moat@postgres:5432/moat
+      REDIS_URL: redis://redis:6379/1
+      CONTROL_PLANE_URL: http://moat-control-plane:8001
+      TRUST_PLANE_URL: http://moat-trust-plane:8003
+      MOAT_AUTH_DISABLED: "true"
+      # IRSB on-chain receipts
+      IRSB_DRY_RUN: "${IRSB_DRY_RUN:-true}"
+      IRSB_RPC_URL: "${IRSB_RPC_URL:-}"
+      IRSB_SOLVER_KEY: "${IRSB_SOLVER_KEY:-}"
+    depends_on:
+      moat-control-plane:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8002/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  moat-control-plane:
+    build:
+      context: ../../moat
+      dockerfile: services/control-plane/Dockerfile
+    networks:
+      - sandbox-internal
+      - moat-external
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://moat:moat@postgres:5432/moat
+      REDIS_URL: redis://redis:6379/0
+      SERVICE_PORT: "8001"
+      MOAT_AUTH_DISABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  moat-trust-plane:
+    build:
+      context: ../../moat
+      dockerfile: services/trust-plane/Dockerfile
+    networks:
+      - sandbox-internal
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://moat:moat@postgres:5432/moat
+      REDIS_URL: redis://redis:6379/2
+      SERVICE_PORT: "8003"
+      MOAT_AUTH_DISABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8003/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── INFRASTRUCTURE ───────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      - sandbox-internal
+    environment:
+      POSTGRES_DB: moat
+      POSTGRES_USER: moat
+      POSTGRES_PASSWORD: moat
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moat -d moat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - sandbox-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

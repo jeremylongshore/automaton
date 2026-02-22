@@ -110,13 +110,16 @@ export function createHeartbeatDaemon(
   async function tick(): Promise<void> {
     const entries = db.getHeartbeatEntries();
 
-    // Check survival tier to adjust behavior
-    let creditsCents = 0;
-    try {
-      creditsCents = await conway.getCreditsBalance();
-    } catch {}
+    // Check survival tier to adjust behavior (bypass when using OpenAI directly)
+    const bypassCredits = !!process.env.OPENAI_API_KEY;
+    let creditsCents = bypassCredits ? 99999 : 0;
+    if (!bypassCredits) {
+      try {
+        creditsCents = await conway.getCreditsBalance();
+      } catch {}
+    }
 
-    const tier = getSurvivalTier(creditsCents);
+    const tier = bypassCredits ? "normal" as const : getSurvivalTier(creditsCents);
     const isLowCompute = tier === "low_compute" || tier === "critical" || tier === "dead";
 
     for (const entry of entries) {

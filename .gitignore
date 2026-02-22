@@ -8,4 +8,5 @@ dist/
 .DS_Store
 *.tgz
 .automaton/wallet.json
+.automaton/automaton.json
 .automaton/state.db

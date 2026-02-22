@@ -12,7 +12,6 @@ import {
   createPublicClient,
   createWalletClient,
   http,
-  encodeFunctionData,
   parseAbi,
   type Address,
   type PrivateKeyAccount,
@@ -25,20 +24,22 @@ import type {
   AutomatonDatabase,
 } from "../types.js";
 
-// ─── Contract Addresses ──────────────────────────────────────
+// ─── Contract Addresses & RPC ────────────────────────────────
 
 const CONTRACTS = {
   mainnet: {
     identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" as Address,
     reputation: "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63" as Address,
     chain: base,
+    rpcUrl: process.env.BASE_RPC_URL || "https://mainnet.base.org",
   },
   testnet: {
     identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" as Address,
     reputation: "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63" as Address,
     chain: baseSepolia,
+    rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
   },
-} as const;
+};
 
 // ─── ABI (minimal subset needed for registration) ────────────
 
@@ -80,6 +81,16 @@ const GET_FEEDBACK_ABI = [
 
 type Network = "mainnet" | "testnet";
 
+function getPublicClient(network: Network) {
+  const c = CONTRACTS[network];
+  return createPublicClient({ chain: c.chain, transport: http(c.rpcUrl) });
+}
+
+function getWalletClient(account: PrivateKeyAccount, network: Network) {
+  const c = CONTRACTS[network];
+  return createWalletClient({ account, chain: c.chain, transport: http(c.rpcUrl) });
+}
+
 /**
  * Register the automaton on-chain with ERC-8004.
  * Returns the agent ID (NFT token ID).
@@ -93,16 +104,8 @@ export async function registerAgent(
   const contracts = CONTRACTS[network];
   const chain = contracts.chain;
 
-  const publicClient = createPublicClient({
-    chain,
-    transport: http(),
-  });
-
-  const walletClient = createWalletClient({
-    account,
-    chain,
-    transport: http(),
-  });
+  const publicClient = getPublicClient(network);
+  const walletClient = getWalletClient(account, network);
 
   // Call register(agentURI)
   const hash = await walletClient.writeContract({
@@ -150,13 +153,8 @@ export async function updateAgentURI(
   db: AutomatonDatabase,
 ): Promise<string> {
   const contracts = CONTRACTS[network];
-  const chain = contracts.chain;
 
-  const walletClient = createWalletClient({
-    account,
-    chain,
-    transport: http(),
-  });
+  const walletClient = getWalletClient(account, network);
 
   const hash = await walletClient.writeContract({
     address: contracts.identity,
@@ -188,13 +186,8 @@ export async function leaveFeedback(
   db: AutomatonDatabase,
 ): Promise<string> {
   const contracts = CONTRACTS[network];
-  const chain = contracts.chain;
 
-  const walletClient = createWalletClient({
-    account,
-    chain,
-    transport: http(),
-  });
+  const walletClient = getWalletClient(account, network);
 
   const hash = await walletClient.writeContract({
     address: contracts.reputation,
@@ -214,12 +207,8 @@ export async function queryAgent(
   network: Network = "mainnet",
 ): Promise<DiscoveredAgent | null> {
   const contracts = CONTRACTS[network];
-  const chain = contracts.chain;
 
-  const publicClient = createPublicClient({
-    chain,
-    transport: http(),
-  });
+  const publicClient = getPublicClient(network);
 
   try {
     const [uri, owner] = await Promise.all([
@@ -254,23 +243,15 @@ export async function getTotalAgents(
   network: Network = "mainnet",
 ): Promise<number> {
   const contracts = CONTRACTS[network];
-  const chain = contracts.chain;
 
-  const publicClient = createPublicClient({
-    chain,
-    transport: http(),
+  const publicClient = getPublicClient(network);
+
+  const supply = await publicClient.readContract({
+    address: contracts.identity,
+    abi: IDENTITY_ABI,
+    functionName: "totalSupply",
   });
-
-  try {
-    const supply = await publicClient.readContract({
-      address: contracts.identity,
-      abi: IDENTITY_ABI,
-      functionName: "totalSupply",
-    });
-    return Number(supply);
-  } catch {
-    return 0;
-  }
+  return Number(supply);
 }
 
 /**
@@ -281,12 +262,8 @@ export async function hasRegisteredAgent(
   network: Network = "mainnet",
 ): Promise<boolean> {
   const contracts = CONTRACTS[network];
-  const chain = contracts.chain;
 
-  const publicClient = createPublicClient({
-    chain,
-    transport: http(),
-  });
+  const publicClient = getPublicClient(network);
 
   try {
     const balance = await publicClient.readContract({

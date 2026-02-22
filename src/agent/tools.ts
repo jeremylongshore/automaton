@@ -44,6 +44,14 @@ const FORBIDDEN_COMMAND_PATTERNS = [
   /cat\s+.*\.gnupg/,
   /cat\s+.*\.env/,
   /cat\s+.*wallet\.json/,
+  // Environment variable exfiltration
+  /\benv\b/,
+  /\bprintenv\b/,
+  /echo\s+.*KEY/i,
+  /echo\s+.*SECRET/i,
+  /echo\s+.*TOKEN/i,
+  /base64.*wallet/i,
+  /cat\s+.*automaton\.json/,
 ];
 
 function isForbiddenCommand(command: string, sandboxId: string): string | null {
@@ -1486,17 +1494,60 @@ Model: ${ctx.inference.getDefaultModel()}
         },
       },
       execute: async (args, ctx) => {
-        const { scanLandscape } = await import("../landscape/scanner.js");
-        const network = (args.network as string) || "mainnet";
-        const snapshot = await scanLandscape(ctx.db, network as any);
+        const { scanLandscape, getLastScanErrors } = await import("../landscape/scanner.js");
+        const snapshot = await scanLandscape(ctx.db, "mainnet");
+        const errors = getLastScanErrors();
 
-        return [
-          `Landscape Scan (${snapshot.timestamp})`,
-          `Total ERC-8004 agents: ${snapshot.totalAgents}`,
-          `Scanned: ${snapshot.scannedAgents}`,
+        // Track that we already scanned — tool-level dedup message
+        const lastScanTs = ctx.db.getKV("last_landscape_scan_ts");
+        const now = Date.now();
+        if (lastScanTs && (now - parseInt(lastScanTs, 10)) < 600_000) {
+          return `Landscape scan already completed recently (${Math.round((now - parseInt(lastScanTs, 10)) / 1000)}s ago). Results cached. Do NOT call scan_landscape again. Use exec to do productive work instead.`;
+        }
+        ctx.db.setKV("last_landscape_scan_ts", now.toString());
+
+        // Separate agents by network prefix
+        const mainnetAgents = snapshot.agents.filter((a) => a.agentId.startsWith("mainnet:"));
+        const testnetAgents = snapshot.agents.filter((a) => a.agentId.startsWith("testnet:"));
+
+        const lines = [
+          `=== Landscape Scan (${snapshot.timestamp}) ===`,
+          `ERC-8004 agents: ${snapshot.totalAgents} total (${mainnetAgents.length} mainnet, ${testnetAgents.length} testnet scanned)`,
           `Service providers: ${snapshot.serviceProviders}`,
           `Bounties found: ${snapshot.bounties.length}`,
-          ``,
+        ];
+
+        if (errors.length > 0) {
+          lines.push(``, `Scan errors (${errors.length}):`);
+          for (const e of errors) lines.push(`  ! ${e}`);
+        }
+
+        lines.push(``);
+        lines.push(
+          testnetAgents.length > 0
+            ? `Testnet agents (Base Sepolia):\n${testnetAgents
+                .slice(0, 10)
+                .map(
+                  (a) =>
+                    `  - #${a.agentId.replace("testnet:", "")} ${a.name || "(no card)"} owner:${a.owner.slice(0, 10)}... ${a.services.length > 0 ? `[${a.services.join(",")}]` : ""}`,
+                )
+                .join("\n")}`
+            : `No testnet agents found.`,
+        );
+        lines.push(``);
+        lines.push(
+          mainnetAgents.length > 0
+            ? `Mainnet agents (Base):\n${mainnetAgents
+                .slice(0, 10)
+                .map(
+                  (a) =>
+                    `  - #${a.agentId.replace("mainnet:", "")} ${a.name || "(no card)"} owner:${a.owner.slice(0, 10)}... ${a.services.length > 0 ? `[${a.services.join(",")}]` : ""}`,
+                )
+                .join("\n")}`
+            : `No mainnet agents found.`,
+        );
+        lines.push(``);
+        lines.push(
           snapshot.bounties.length > 0
             ? `Top bounties:\n${snapshot.bounties
                 .slice(0, 5)
@@ -1506,7 +1557,9 @@ Model: ${ctx.inference.getDefaultModel()}
                 )
                 .join("\n")}`
             : `No bounties found.`,
-          ``,
+        );
+        lines.push(``);
+        lines.push(
           snapshot.services.length > 0
             ? `Services:\n${snapshot.services
                 .slice(0, 10)
@@ -1516,7 +1569,16 @@ Model: ${ctx.inference.getDefaultModel()}
                 )
                 .join("\n")}`
             : `No services cataloged.`,
-        ].join("\n");
+        );
+
+        // If scan returned nothing, tell the agent to stop retrying and do something else
+        if (snapshot.totalAgents === 0 && snapshot.bounties.length === 0) {
+          lines.push(``);
+          lines.push(`NOTE: Landscape scan returned empty. Do NOT call scan_landscape again this wake cycle.`);
+          lines.push(`Instead: use exec to do productive work — build a web service, write code, create something sellable.`);
+        }
+
+        return lines.join("\n");
       },
     },
 
