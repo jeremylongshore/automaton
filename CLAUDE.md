@@ -12,6 +12,7 @@ On-chain agent company operating as **Intent Solutions Agent Company**. Runs ins
 - **Model**: gpt-4o-mini (budget: $20)
 - **Base balance**: $10 USDC
 - **Docker service name**: `scout`
+- **Repo**: `github.com/jeremylongshore/intent-scout`
 
 ## Build & Run
 
