@@ -85,9 +85,14 @@ node dist/index.js --status
 | `src/index.ts` | Entry point (propagates openaiApiKey to env) |
 | `src/agent/tools.ts` | Tool definitions + FORBIDDEN_COMMAND_PATTERNS |
 | `src/conway/client.ts` | Conway API client (exec() at line 68) |
-| `src/daemon.ts` | Heartbeat daemon (bypasses credit checks with OpenAI key) |
+| `src/heartbeat/daemon.ts` | Heartbeat daemon (bypasses credit checks with OpenAI key) |
 | `Dockerfile` | Multi-stage build (node:22-slim) |
 | `docker-compose.yml` | Full stack: agent + Moat (3 services) + postgres + redis |
+| `vitest.config.ts` | Test configuration (Vitest) |
+| `packages/cli/` | CLI workspace package |
+| `.github/workflows/ci.yml` | CI pipeline (5 jobs: build, test, docker, security, integration) |
+| `scripts/integration-test.sh` | Docker stack integration tests (10 test groups) |
+| `scripts/seed-capabilities.sh` | Seeds Moat control plane with PolicyBundles |
 | `~/.automaton/SOUL.md` | Agent personality/identity |
 | `~/.automaton/automaton.json` | Config with API keys (NOT in git) |
 | `~/.automaton/heartbeat.yml` | Heartbeat task definitions |
@@ -115,6 +120,7 @@ Policy engine enforces: scope checks, daily budget limits, domain allowlists, ap
 
 - **Commit format**: `<type>(<scope>): <subject>`
 - **Build**: `pnpm build` (TypeScript → dist/)
-- **Test**: `pnpm test`
+- **Test**: `pnpm test` (Vitest)
+- **Integration test**: `scripts/integration-test.sh` (or `--quick` to skip slow network tests)
 - **Config**: `~/.automaton/automaton.json` (runtime), `docker-compose.yml` (infra)
 - **Secrets**: Docker secrets or env vars, never in CLI args or git
