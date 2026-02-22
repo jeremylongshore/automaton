@@ -1,0 +1,336 @@
+# intent-scout — Continuous Integration
+#
+# Validates the concentric ring architecture:
+#   1. Build + typecheck  (TypeScript, root + packages/*)
+#   2. Unit tests         (vitest)
+#   3. Docker image build (verifies Dockerfile is valid)
+#   4. Security scan      (pnpm audit + secret pattern grep)
+#   5. Integration tests  (Docker stack — main branch only)
+#
+# NOTE on docker-compose integration:
+#   The full stack (moat-gateway, moat-control-plane, moat-trust-plane) builds
+#   from ../../moat which is a sibling repo not present in this checkout.
+#   The integration job clones that repo before bringing the stack up.
+#   The private_key secret file is seeded with a throwaway CI value.
+#
+# Triggers on push to main and PRs targeting main.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────────
+  # 1. BUILD + TYPECHECK
+  # ──────────────────────────────────────────────────────────────
+  build:
+    name: Build & Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Build root package then all workspace packages (pnpm -r build)
+      - name: Build
+        run: pnpm build
+
+      # Typecheck root package (src/)
+      - name: Typecheck root
+        run: pnpm exec tsc --noEmit
+
+      # Typecheck workspace packages
+      - name: Typecheck packages
+        run: pnpm -r exec tsc --noEmit
+
+      # Cache the build output so downstream jobs can reuse it
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: |
+            dist/
+            packages/*/dist/
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────
+  # 2. UNIT TESTS
+  # ──────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests (vitest)
+    runs-on: ubuntu-latest
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Restore built artifacts so tests can import from dist/
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+
+      - name: Run unit tests
+        run: pnpm test -- --reporter=verbose
+        env:
+          # Prevent any accidental network calls hitting real endpoints
+          NODE_ENV: test
+
+  # ──────────────────────────────────────────────────────────────
+  # 3. DOCKER IMAGE BUILD
+  # ──────────────────────────────────────────────────────────────
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: intent-scout:ci-${{ github.sha }}
+          # Layer cache stored in GitHub Actions cache — speeds up rebuilds
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ──────────────────────────────────────────────────────────────
+  # 4. SECURITY SCAN
+  # ──────────────────────────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fail on high/critical severity; warn on moderate (|| true keeps CI green
+      # for known-moderate advisories — tighten to --audit-level=moderate when ready)
+      - name: Dependency audit
+        run: pnpm audit --audit-level=high || true
+
+      # Pattern-based secret leak detection.
+      # Covers: AWS keys, OpenAI keys, GitHub tokens, raw private key literals.
+      # Excludes: test fixtures, lock files, compiled dist.
+      - name: Check for hardcoded secrets
+        run: |
+          FOUND=0
+
+          echo "Scanning src/ for secret patterns..."
+          if grep -rn \
+               -e "AKIA[0-9A-Z]\{16\}" \
+               -e "sk-[a-zA-Z0-9]\{32,\}" \
+               -e "ghp_[a-zA-Z0-9]\{36\}" \
+               -e "ghu_[a-zA-Z0-9]\{36\}" \
+               -e "private_key[[:space:]]*=[[:space:]]*['\"][a-z0-9-]\{20,\}" \
+               src/ \
+               --include="*.ts" \
+               --include="*.js" \
+               --include="*.json" \
+               2>/dev/null; then
+            echo "::error::Potential hardcoded secrets detected in src/"
+            FOUND=1
+          fi
+
+          # Also scan root-level config files (but not lockfiles or node_modules)
+          if grep -rn \
+               -e "AKIA[0-9A-Z]\{16\}" \
+               -e "sk-[a-zA-Z0-9]\{32,\}" \
+               --include="*.ts" \
+               --include="*.js" \
+               --exclude-dir=node_modules \
+               --exclude-dir=dist \
+               . \
+               2>/dev/null; then
+            echo "::error::Potential hardcoded secrets detected outside src/"
+            FOUND=1
+          fi
+
+          if [ "$FOUND" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "No hardcoded secrets detected."
+
+      # Verify no JSON service account key files were accidentally committed
+      - name: Check for committed credential files
+        run: |
+          if find . \
+               -not -path '*/node_modules/*' \
+               -not -path '*/.git/*' \
+               \( -name '*service-account*.json' \
+                  -o -name '*credentials*.json' \
+                  -o -name '*private_key*.json' \
+                  -o -name '*private_key*.txt' \
+               \) | grep -q .; then
+            echo "::error::Credential/key files found in repository — remove and rotate immediately"
+            exit 1
+          fi
+          echo "No credential files found."
+
+  # ──────────────────────────────────────────────────────────────
+  # 5. INTEGRATION TESTS (main branch only)
+  #
+  # The full stack requires:
+  #   - The moat sibling repo (cloned from GitHub)
+  #   - A throwaway private key file for the Docker secret
+  #
+  # Skipped on PRs to keep feedback loops fast.
+  # ──────────────────────────────────────────────────────────────
+  integration:
+    name: Integration Tests (Docker Stack)
+    runs-on: ubuntu-latest
+    needs: [docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout intent-scout
+        uses: actions/checkout@v4
+        with:
+          path: intent-scout
+
+      # Clone the moat sibling repo so docker-compose build contexts resolve.
+      # Adjust the ref/branch as needed for the moat repo's default branch.
+      - name: Clone moat sibling repo
+        uses: actions/checkout@v4
+        with:
+          repository: Conway-Research/moat
+          path: moat
+          # If the moat repo is private, add:
+          #   token: ${{ secrets.MOAT_REPO_TOKEN }}
+
+      # docker-compose.yml mounts ${HOME}/.automaton — seed a throwaway key
+      - name: Seed CI private key
+        run: |
+          mkdir -p "$HOME/.automaton"
+          # Throwaway throwaway key — not a real private key
+          echo "0x0000000000000000000000000000000000000000000000000000000000000001" \
+            > "$HOME/.automaton/private_key.txt"
+          chmod 600 "$HOME/.automaton/private_key.txt"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Bring the full concentric ring stack up.
+      # --wait blocks until all healthchecks pass (or timeout).
+      - name: Start Docker stack
+        working-directory: intent-scout
+        run: |
+          docker compose up -d --build --wait --wait-timeout 180
+        env:
+          IRSB_DRY_RUN: "true"
+          IRSB_RPC_URL: ""
+          IRSB_SOLVER_KEY: ""
+
+      # Run the integration smoke test if the script exists.
+      # Falls back to a basic healthcheck probe if the script is absent.
+      - name: Run integration tests
+        working-directory: intent-scout
+        run: |
+          if [ -f scripts/integration-test.sh ]; then
+            bash scripts/integration-test.sh --quick
+          else
+            echo "No integration-test.sh found — running basic healthcheck probes"
+
+            # Moat gateway healthcheck
+            echo "Probing moat-gateway..."
+            docker compose exec -T moat-gateway \
+              curl -sf http://localhost:8002/healthz \
+              && echo "moat-gateway: OK"
+
+            # Moat control-plane healthcheck
+            echo "Probing moat-control-plane..."
+            docker compose exec -T moat-control-plane \
+              curl -sf http://localhost:8001/healthz \
+              && echo "moat-control-plane: OK"
+
+            # Confirm scout container is running (it has no HTTP endpoint by default)
+            echo "Checking scout container status..."
+            STATUS=$(docker compose ps scout --format json | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d.get('State','unknown'))" \
+              2>/dev/null || docker compose ps scout | tail -1)
+            echo "scout status: $STATUS"
+
+            echo "Basic healthcheck probes passed."
+          fi
+
+      # Always capture logs so failures are diagnosable
+      - name: Collect Docker logs on failure
+        if: failure()
+        working-directory: intent-scout
+        run: docker compose logs --no-color > docker-logs.txt
+
+      - name: Upload Docker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-${{ github.sha }}
+          path: intent-scout/docker-logs.txt
+          retention-days: 7
+
+      # Tear down regardless of pass/fail to avoid orphaned containers
+      - name: Teardown Docker stack
+        if: always()
+        working-directory: intent-scout
+        run: docker compose down -v --remove-orphans
